@@ -27,6 +27,30 @@ const CATEGORY_KEYWORDS = [
   'topics'
 ];
 
+// Safe Date Converter to prevent RangeError crashes
+const parseExcelDate = (val: any): string => {
+  if (!val) return new Date().toISOString();
+  try {
+    if (val instanceof Date && !isNaN(val.getTime())) {
+      return val.toISOString();
+    }
+    if (typeof val === 'number') {
+      const parsed = XLSX.SSF.parse_date_code(val);
+      if (parsed) {
+        const d = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, parsed.S || 0);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+    }
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString();
+    }
+  } catch (e) {
+    // Fallback to current time if parsing fails
+  }
+  return new Date().toISOString();
+};
+
 export default function EKORunbookPage() {
   const [tasks, setTasks] = useState<EKOTask[]>([]);
   const [loading, setLoading] = useState(true);
@@ -185,7 +209,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Robust Sequential 2D Matrix Excel Parser
+  // Bulletproof Sequential 2D Matrix Excel Parser
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -198,10 +222,13 @@ export default function EKORunbookPage() {
     reader.onload = async (evt) => {
       try {
         const buffer = evt.target?.result;
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        
-        // Read sheet as raw 2D matrix
+        if (!buffer) throw new Error('File buffer is empty.');
+
+        const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName) throw new Error('No sheets found in workbook.');
+
+        const firstSheet = workbook.Sheets[firstSheetName];
         const matrix: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
 
         let currentCategory = 'Topics Brainstorming';
@@ -210,16 +237,16 @@ export default function EKORunbookPage() {
 
         for (let r = 0; r < matrix.length; r++) {
           const row = matrix[r];
-          if (!row || row.length === 0) continue;
+          if (!Array.isArray(row) || row.length === 0) continue;
 
-          const cellStrings = row.map((c) => String(c ?? '').trim());
+          const cellStrings = row.map((c) => (c !== null && c !== undefined ? String(c).trim() : ''));
           const nonEmpCells = cellStrings.filter((s) => s !== '');
 
           if (nonEmpCells.length === 0) continue; // Skip blank rows
 
           const rowCombinedLower = cellStrings.join(' ').toLowerCase();
 
-          // 1. Detect Column Headers Row
+          // 1. Column Headers Row Detection
           if (
             rowCombinedLower.includes('activity') ||
             rowCombinedLower.includes('assigned') ||
@@ -235,39 +262,39 @@ export default function EKORunbookPage() {
               else if (l.includes('status') || l.includes('done') || l.includes('completed') || l.includes('checkbox') || l.includes('state')) colMap.status = idx;
               else if (l.includes('note') || l.includes('comment') || l.includes('detail')) colMap.notes = idx;
             });
-            continue; // Skip the column header row itself
+            continue; // Skip column header row
           }
 
           const rawTitle = colMap.title >= 0 && cellStrings[colMap.title] ? cellStrings[colMap.title] : cellStrings[0];
           if (!rawTitle || rawTitle === '') continue;
 
-          const person = colMap.person >= 0 ? cellStrings[colMap.person] : '';
-          const team = colMap.team >= 0 ? cellStrings[colMap.team] : '';
-          const dateRaw = colMap.date >= 0 ? cellStrings[colMap.date] : '';
-          const statusRaw = colMap.status >= 0 ? cellStrings[colMap.status] : '';
-          const notes = colMap.notes >= 0 ? cellStrings[colMap.notes] : '';
+          const personVal = colMap.person >= 0 ? cellStrings[colMap.person] : '';
+          const teamVal = colMap.team >= 0 ? cellStrings[colMap.team] : '';
+          const dateVal = colMap.date >= 0 ? row[colMap.date] : '';
+          const statusVal = colMap.status >= 0 ? cellStrings[colMap.status] : '';
+          const notesVal = colMap.notes >= 0 ? cellStrings[colMap.notes] : '';
 
-          // 2. Check if this row is a Section Category Header
+          // 2. Section Header / Category Check
           const lowerTitle = rawTitle.toLowerCase();
           const isCategoryKeyword = CATEGORY_KEYWORDS.some((kw) => lowerTitle.includes(kw));
-          const hasNoMetadata = !person && !team && !dateRaw && !statusRaw;
+          const hasNoTaskMetadata = !personVal && !teamVal && !dateVal && !statusVal;
 
-          if (isCategoryKeyword && (hasNoMetadata || nonEmpCells.length <= 2)) {
+          if (isCategoryKeyword || (hasNoTaskMetadata && nonEmpCells.length <= 2)) {
             currentCategory = rawTitle;
             continue; // DO NOT add category headers as task cards!
           }
 
-          // 3. Process Task Row
-          const scheduled_at = dateRaw && !isNaN(Date.parse(dateRaw)) ? new Date(dateRaw).toISOString() : new Date().toISOString();
-          const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(statusRaw.toLowerCase());
+          // 3. Task Row Processing with Safe Date Parsing
+          const scheduled_at = parseExcelDate(dateVal);
+          const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(statusVal.toLowerCase());
 
           mappedRows.push({
             title: rawTitle,
             subtask: currentCategory || 'Miscellaneous',
-            assigned_to: person || 'Unassigned Person',
-            team: team || 'Unassigned Team',
+            assigned_to: personVal || 'Unassigned Person',
+            team: teamVal || 'Unassigned Team',
             scheduled_at,
-            notes,
+            notes: notesVal,
             is_completed,
           });
         }
@@ -287,8 +314,9 @@ export default function EKORunbookPage() {
         } else {
           setUploadStatus('No valid tasks found in the sheet.');
         }
-      } catch (err) {
-        setUploadStatus('Failed to parse file.');
+      } catch (err: any) {
+        console.error('Excel Import Exception:', err);
+        setUploadStatus(`Failed to parse file: ${err?.message || String(err)}`);
       }
     };
 
