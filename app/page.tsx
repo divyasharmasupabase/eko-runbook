@@ -11,7 +11,7 @@ interface EKOTask {
   subtask: string;
   assigned_to: string;
   team: string;
-  scheduled_at: string | null; // Now allows null/blank dates
+  scheduled_at: string | null;
   is_completed: boolean;
   notes: string;
 }
@@ -48,27 +48,45 @@ const detectCategoryHeader = (cellStrings: string[]): string | null => {
   return null;
 };
 
-// Safe Optional Date Converter
+// Enhanced Excel Date Parser
 const parseExcelDate = (val: any): string | null => {
-  if (!val || String(val).trim() === '') return null; // Keep it blank if empty
-  
+  if (val === null || val === undefined) return null;
+  const strVal = String(val).trim();
+  if (strVal === '' || strVal.toLowerCase() === 'undefined' || strVal.toLowerCase() === 'null') return null;
+
   try {
-    if (val instanceof Date && !isNaN(val.getTime())) {
-      return val.toISOString();
+    // 1. JS Date object
+    if (val instanceof Date) {
+      if (!isNaN(val.getTime())) return val.toISOString();
     }
+
+    // 2. Excel Serial Number
     if (typeof val === 'number') {
-      const parsed = XLSX.SSF.parse_date_code(val);
-      if (parsed) {
-        const d = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, parsed.S || 0);
-        if (!isNaN(d.getTime())) return d.toISOString();
+      if (val > 20000 && val < 70000) {
+        const parsed = XLSX.SSF.parse_date_code(val);
+        if (parsed) {
+          const d = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, parsed.S || 0);
+          if (!isNaN(d.getTime())) return d.toISOString();
+        }
       }
     }
-    const d = new Date(val);
-    if (!isNaN(d.getTime())) {
-      return d.toISOString();
+
+    // 3. String date parsing
+    if (typeof val === 'string' || typeof val === 'number') {
+      // Prevent pure integers like status codes (1, 0, 2) from parsing as dates
+      if (/^\d{1,4}$/.test(strVal) && Number(strVal) < 1900) {
+        return null;
+      }
+
+      const d = new Date(strVal);
+      if (!isNaN(d.getTime())) {
+        if (d.getFullYear() >= 2000 && d.getFullYear() <= 2100) {
+          return d.toISOString();
+        }
+      }
     }
   } catch (e) {
-    // Fallback if parsing fails
+    // Ignore error
   }
   return null;
 };
@@ -158,7 +176,7 @@ export default function EKORunbookPage() {
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle) return; // Only title is explicitly required now
+    if (!newTitle) return;
 
     const { error } = await supabase.from('eko_tasks').insert([
       {
@@ -166,7 +184,7 @@ export default function EKORunbookPage() {
         subtask: 'Miscellaneous',
         assigned_to: newAssigned || 'Unassigned Person',
         team: newTeam || 'Unassigned Team',
-        scheduled_at: newScheduled ? new Date(newScheduled).toISOString() : null, // Safely allow null
+        scheduled_at: newScheduled ? new Date(newScheduled).toISOString() : null,
         notes: newNotes,
         is_completed: false,
       },
@@ -226,7 +244,7 @@ export default function EKORunbookPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const shouldReplace = tasks.length > 0 ? confirm('Do you want to REPLACE existing tasks? Click OK to replace all current tasks, or Cancel to ADD/APPEND to the existing list.') : false;
+    const shouldReplace = tasks.length > 0 ? confirm('Do you want to REPLACE existing tasks? Click OK to clear board and upload fresh, or Cancel to append.') : true;
 
     setUploadStatus('Reading Excel file...');
     const reader = new FileReader();
@@ -254,33 +272,35 @@ export default function EKORunbookPage() {
           const cellStrings = row.map((c) => (c !== null && c !== undefined ? String(c).trim() : ''));
           const nonEmpCells = cellStrings.filter((s) => s !== '');
 
-          if (nonEmpCells.length === 0) continue; // Skip blank rows
+          if (nonEmpCells.length === 0) continue;
 
           const rowCombinedLower = safeLower(cellStrings.join(' '));
 
-          // 1. Column Headers Detection
+          // 1. Column Headers Detection Row
           if (
             rowCombinedLower.includes('activity') ||
             rowCombinedLower.includes('assigned') ||
             rowCombinedLower.includes('things to do') ||
-            rowCombinedLower.includes('owner')
+            rowCombinedLower.includes('owner') ||
+            rowCombinedLower.includes('due date') ||
+            rowCombinedLower.includes('date')
           ) {
             cellStrings.forEach((val, idx) => {
               const l = safeLower(val);
               if (l.includes('activity') || l.includes('task') || l.includes('title') || l.includes('things to do')) colMap.title = idx;
               else if (l.includes('person') || l.includes('assigned') || l.includes('owner')) colMap.person = idx;
               else if (l.includes('team') || l.includes('department') || l.includes('group')) colMap.team = idx;
-              else if (l.includes('date') || l.includes('time') || l.includes('schedule')) colMap.date = idx;
+              else if (l.includes('date') || l.includes('time') || l.includes('schedule') || l.includes('due') || l.includes('deadline') || l.includes('eta') || l.includes('when')) colMap.date = idx;
               else if (l.includes('status') || l.includes('done') || l.includes('completed') || l.includes('checkbox') || l.includes('state')) colMap.status = idx;
               else if (l.includes('note') || l.includes('comment') || l.includes('detail')) colMap.notes = idx;
             });
-            continue;
+            continue; 
           }
 
           // 2. Section Category Header Check
           const matchedCategory = detectCategoryHeader(cellStrings);
           if (matchedCategory) {
-            currentCategory = matchedCategory;
+            currentCategory = matchedCategory; 
             continue; 
           }
 
@@ -293,13 +313,25 @@ export default function EKORunbookPage() {
           const personVal = getCell(colMap.person);
           const teamVal = getCell(colMap.team);
           
-          // Pull raw Date object from row if parsed by XLSX
-          const dateVal = colMap.date >= 0 && colMap.date < row.length ? row[colMap.date] : '';
-          
+          // Get raw date cell value from mapped column
+          let dateVal = colMap.date >= 0 && colMap.date < row.length ? row[colMap.date] : null;
+          let scheduled_at = parseExcelDate(dateVal);
+
+          // Fallback: If no date found in designated column, scan all cells in this row for a valid date!
+          if (!scheduled_at) {
+            for (let c = 0; c < row.length; c++) {
+              if (c === colMap.title) continue; // Skip title cell
+              const cand = parseExcelDate(row[c]);
+              if (cand) {
+                scheduled_at = cand;
+                break;
+              }
+            }
+          }
+
           const statusVal = getCell(colMap.status);
           const notesVal = getCell(colMap.notes);
 
-          const scheduled_at = parseExcelDate(dateVal); // Extracts safely or returns null
           const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(safeLower(statusVal));
 
           mappedRows.push({
@@ -322,7 +354,7 @@ export default function EKORunbookPage() {
           if (error) {
             setUploadStatus(`Error importing: ${error.message}`);
           } else {
-            setUploadStatus(`Successfully imported ${mappedRows.length} activities grouped under categories!`);
+            setUploadStatus(`Successfully imported ${mappedRows.length} activities with accurate due dates!`);
             fetchTasks();
           }
         } else {
@@ -362,7 +394,6 @@ export default function EKORunbookPage() {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  // Safe Date Sorting (Places tasks with NO date at the bottom)
   const uncompletedTasks = filteredTasks
     .filter((t) => !t.is_completed)
     .sort((a, b) => {
@@ -372,7 +403,7 @@ export default function EKORunbookPage() {
     });
 
   const uniqueUpcomingDates = Array.from(
-    new Set(uncompletedTasks.map((t) => getDateKey(t.scheduled_at)).filter(Boolean)) // Filters out blank dates safely
+    new Set(uncompletedTasks.map((t) => getDateKey(t.scheduled_at)).filter(Boolean))
   ).slice(0, 2);
 
   const upcomingTasksByDateGroup = uniqueUpcomingDates.map((dateKey) => ({
@@ -544,7 +575,6 @@ export default function EKORunbookPage() {
             className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm md:col-span-2 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
             required
           />
-          {/* Due date is optional now (no required flag) */}
           <input
             type="datetime-local"
             value={newScheduled}
@@ -727,9 +757,9 @@ export default function EKORunbookPage() {
                                     )}
 
                                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 pt-1">
-                                      {/* Only render Date chip if date exists */}
+                                      {/* Due Date Chip */}
                                       {task.scheduled_at && (
-                                        <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800'}`}>
+                                        <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800 text-amber-300'}`}>
                                           <Clock size={12} />
                                           {new Date(task.scheduled_at).toLocaleString([], {
                                             dateStyle: 'short',
@@ -819,7 +849,6 @@ export default function EKORunbookPage() {
                               )}
 
                               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 pt-1">
-                                {/* Only render Date chip if date exists */}
                                 {task.scheduled_at && (
                                   <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
                                     <Clock size={11} />
