@@ -11,7 +11,7 @@ interface EKOTask {
   subtask: string;
   assigned_to: string;
   team: string;
-  scheduled_at: string;
+  scheduled_at: string | null; // Now allows null/blank dates
   is_completed: boolean;
   notes: string;
 }
@@ -19,10 +19,10 @@ interface EKOTask {
 // Safe string helper
 const safeLower = (val: any): string => String(val ?? '').toLowerCase().trim();
 
-// Strict Category Header Detection (Matches exact section dividers in Excel)
+// Strict Category Header Detection
 const detectCategoryHeader = (cellStrings: string[]): string | null => {
   const nonEmp = cellStrings.filter((s) => s !== '');
-  if (nonEmp.length === 0 || nonEmp.length > 3) return null; // Section headers don't have full task metadata rows
+  if (nonEmp.length === 0 || nonEmp.length > 3) return null;
 
   for (const str of nonEmp) {
     const lower = str.toLowerCase().trim();
@@ -48,9 +48,10 @@ const detectCategoryHeader = (cellStrings: string[]): string | null => {
   return null;
 };
 
-// Safe Date Converter
-const parseExcelDate = (val: any): string => {
-  if (!val) return new Date().toISOString();
+// Safe Optional Date Converter
+const parseExcelDate = (val: any): string | null => {
+  if (!val || String(val).trim() === '') return null; // Keep it blank if empty
+  
   try {
     if (val instanceof Date && !isNaN(val.getTime())) {
       return val.toISOString();
@@ -67,26 +68,23 @@ const parseExcelDate = (val: any): string => {
       return d.toISOString();
     }
   } catch (e) {
-    // Fallback
+    // Fallback if parsing fails
   }
-  return new Date().toISOString();
+  return null;
 };
 
 export default function EKORunbookPage() {
   const [tasks, setTasks] = useState<EKOTask[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Tab State ('ALL' for Common Runbook, or person's name)
   const [activeTab, setActiveTab] = useState<string>('ALL');
 
-  // New Task Form State
   const [newTitle, setNewTitle] = useState('');
   const [newAssigned, setNewAssigned] = useState('');
   const [newTeam, setNewTeam] = useState('');
   const [newScheduled, setNewScheduled] = useState('');
   const [newNotes, setNewNotes] = useState('');
   
-  // Task Editing State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editAssigned, setEditAssigned] = useState('');
@@ -96,7 +94,7 @@ export default function EKORunbookPage() {
 
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
-  const toDatetimeLocal = (isoStr: string) => {
+  const toDatetimeLocal = (isoStr: string | null) => {
     if (!isoStr) return '';
     const d = new Date(isoStr);
     d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -106,8 +104,7 @@ export default function EKORunbookPage() {
   const fetchTasks = async () => {
     const { data, error } = await supabase
       .from('eko_tasks')
-      .select('*')
-      .order('scheduled_at', { ascending: true });
+      .select('*');
 
     if (!error && data) {
       setTasks(data);
@@ -132,7 +129,6 @@ export default function EKORunbookPage() {
     };
   }, []);
 
-  // Clear All Tasks
   const handleClearAllTasks = async () => {
     if (confirm('Are you sure you want to delete ALL tasks in the tracker? This action cannot be undone.')) {
       setLoading(true);
@@ -149,7 +145,6 @@ export default function EKORunbookPage() {
     }
   };
 
-  // Toggle Completion
   const toggleTask = async (id: string, currentStatus: boolean) => {
     setTasks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, is_completed: !currentStatus } : t))
@@ -161,10 +156,9 @@ export default function EKORunbookPage() {
       .eq('id', id);
   };
 
-  // Add Manual Task
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle || !newScheduled) return;
+    if (!newTitle) return; // Only title is explicitly required now
 
     const { error } = await supabase.from('eko_tasks').insert([
       {
@@ -172,7 +166,7 @@ export default function EKORunbookPage() {
         subtask: 'Miscellaneous',
         assigned_to: newAssigned || 'Unassigned Person',
         team: newTeam || 'Unassigned Team',
-        scheduled_at: new Date(newScheduled).toISOString(),
+        scheduled_at: newScheduled ? new Date(newScheduled).toISOString() : null, // Safely allow null
         notes: newNotes,
         is_completed: false,
       },
@@ -187,19 +181,17 @@ export default function EKORunbookPage() {
     }
   };
 
-  // Start Editing Task
   const startEditing = (task: EKOTask) => {
     setEditingId(task.id);
     setEditTitle(task.title);
     setEditAssigned(task.assigned_to);
     setEditTeam(task.team);
-    setEditScheduled(toDatetimeLocal(task.scheduled_at));
+    setEditScheduled(task.scheduled_at ? toDatetimeLocal(task.scheduled_at) : '');
     setEditNotes(task.notes || '');
   };
 
-  // Save Editing Changes
   const saveAssignment = async (id: string) => {
-    const updatedScheduledAt = editScheduled ? new Date(editScheduled).toISOString() : new Date().toISOString();
+    const updatedScheduledAt = editScheduled ? new Date(editScheduled).toISOString() : null;
 
     setTasks((prev) =>
       prev.map((t) =>
@@ -230,7 +222,6 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Sequential 2D Matrix Excel Parser with Strict Section Header Tracking
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -267,7 +258,7 @@ export default function EKORunbookPage() {
 
           const rowCombinedLower = safeLower(cellStrings.join(' '));
 
-          // 1. Column Headers Detection Row
+          // 1. Column Headers Detection
           if (
             rowCombinedLower.includes('activity') ||
             rowCombinedLower.includes('assigned') ||
@@ -283,14 +274,14 @@ export default function EKORunbookPage() {
               else if (l.includes('status') || l.includes('done') || l.includes('completed') || l.includes('checkbox') || l.includes('state')) colMap.status = idx;
               else if (l.includes('note') || l.includes('comment') || l.includes('detail')) colMap.notes = idx;
             });
-            continue; // Skip column header row
+            continue;
           }
 
           // 2. Section Category Header Check
           const matchedCategory = detectCategoryHeader(cellStrings);
           if (matchedCategory) {
-            currentCategory = matchedCategory; // Switch active category for all following rows!
-            continue; // DO NOT add this row as a task card!
+            currentCategory = matchedCategory;
+            continue; 
           }
 
           // 3. Process Regular Task Row
@@ -301,16 +292,19 @@ export default function EKORunbookPage() {
 
           const personVal = getCell(colMap.person);
           const teamVal = getCell(colMap.team);
+          
+          // Pull raw Date object from row if parsed by XLSX
           const dateVal = colMap.date >= 0 && colMap.date < row.length ? row[colMap.date] : '';
+          
           const statusVal = getCell(colMap.status);
           const notesVal = getCell(colMap.notes);
 
-          const scheduled_at = parseExcelDate(dateVal);
+          const scheduled_at = parseExcelDate(dateVal); // Extracts safely or returns null
           const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(safeLower(statusVal));
 
           mappedRows.push({
             title: rawTitle,
-            subtask: currentCategory, // Automatically inherits current active category!
+            subtask: currentCategory,
             assigned_to: personVal || 'Unassigned Person',
             team: teamVal || 'Unassigned Team',
             scheduled_at,
@@ -344,7 +338,6 @@ export default function EKORunbookPage() {
     e.target.value = '';
   };
 
-  // Helper function to group tasks by Category/Subtask
   const groupByCategory = (taskList: EKOTask[]) => {
     const groups: { [key: string]: EKOTask[] } = {};
     taskList.forEach((task) => {
@@ -363,18 +356,23 @@ export default function EKORunbookPage() {
     ? tasks 
     : tasks.filter((t) => safeLower(t.assigned_to) === safeLower(activeTab));
 
-  const getDateKey = (dateStr: string) => {
+  const getDateKey = (dateStr: string | null) => {
     if (!dateStr) return '';
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
+  // Safe Date Sorting (Places tasks with NO date at the bottom)
   const uncompletedTasks = filteredTasks
     .filter((t) => !t.is_completed)
-    .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
+    .sort((a, b) => {
+      const timeA = a.scheduled_at ? new Date(a.scheduled_at).getTime() : Infinity;
+      const timeB = b.scheduled_at ? new Date(b.scheduled_at).getTime() : Infinity;
+      return timeA - timeB;
+    });
 
   const uniqueUpcomingDates = Array.from(
-    new Set(uncompletedTasks.map((t) => getDateKey(t.scheduled_at)))
+    new Set(uncompletedTasks.map((t) => getDateKey(t.scheduled_at)).filter(Boolean)) // Filters out blank dates safely
   ).slice(0, 2);
 
   const upcomingTasksByDateGroup = uniqueUpcomingDates.map((dateKey) => ({
@@ -382,7 +380,8 @@ export default function EKORunbookPage() {
     items: uncompletedTasks.filter((t) => getDateKey(t.scheduled_at) === dateKey),
   }));
 
-  const isTaskInTopUpcomingDates = (scheduledAt: string) => {
+  const isTaskInTopUpcomingDates = (scheduledAt: string | null) => {
+    if (!scheduledAt) return false;
     return uniqueUpcomingDates.includes(getDateKey(scheduledAt));
   };
 
@@ -507,9 +506,11 @@ export default function EKORunbookPage() {
                       <div key={task.id} className="bg-slate-950/80 border border-slate-800 p-2.5 rounded-lg space-y-1">
                         <div className="flex items-start justify-between gap-2">
                           <h4 className="font-semibold text-orange-100 text-xs">{task.title}</h4>
-                          <span className="text-[10px] text-orange-400 font-mono shrink-0 bg-orange-950/50 px-1.5 py-0.5 rounded border border-orange-900/50">
-                            {new Date(task.scheduled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
+                          {task.scheduled_at && (
+                            <span className="text-[10px] text-orange-400 font-mono shrink-0 bg-orange-950/50 px-1.5 py-0.5 rounded border border-orange-900/50">
+                              {new Date(task.scheduled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
                         </div>
 
                         {task.subtask && (
@@ -543,12 +544,12 @@ export default function EKORunbookPage() {
             className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm md:col-span-2 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
             required
           />
+          {/* Due date is optional now (no required flag) */}
           <input
             type="datetime-local"
             value={newScheduled}
             onChange={(e) => setNewScheduled(e.target.value)}
             className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            required
           />
           <input
             type="text"
@@ -726,13 +727,16 @@ export default function EKORunbookPage() {
                                     )}
 
                                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 pt-1">
-                                      <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800'}`}>
-                                        <Clock size={12} />
-                                        {new Date(task.scheduled_at).toLocaleString([], {
-                                          dateStyle: 'short',
-                                          timeStyle: 'short',
-                                        })}
-                                      </span>
+                                      {/* Only render Date chip if date exists */}
+                                      {task.scheduled_at && (
+                                        <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800'}`}>
+                                          <Clock size={12} />
+                                          {new Date(task.scheduled_at).toLocaleString([], {
+                                            dateStyle: 'short',
+                                            timeStyle: 'short',
+                                          })}
+                                        </span>
+                                      )}
 
                                       <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-emerald-300">
                                         <Users size={12} /> {task.team}
@@ -815,13 +819,16 @@ export default function EKORunbookPage() {
                               )}
 
                               <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 pt-1">
-                                <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                                  <Clock size={11} />
-                                  {new Date(task.scheduled_at).toLocaleString([], {
-                                    dateStyle: 'short',
-                                    timeStyle: 'short',
-                                  })}
-                                </span>
+                                {/* Only render Date chip if date exists */}
+                                {task.scheduled_at && (
+                                  <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                    <Clock size={11} />
+                                    {new Date(task.scheduled_at).toLocaleString([], {
+                                      dateStyle: 'short',
+                                      timeStyle: 'short',
+                                    })}
+                                  </span>
+                                )}
 
                                 <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-400">
                                   <Users size={11} /> {task.team}
