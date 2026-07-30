@@ -16,16 +16,19 @@ interface EKOTask {
   notes: string;
 }
 
-const CATEGORY_KEYWORDS = [
-  'brainstorm',
-  'qa topic',
-  'qa content',
-  'hackathon',
-  'swag',
-  'miscellaneous',
-  'misc',
-  'topics'
-];
+// STRICT MATCHING FOR YOUR 5 SPECIFIC CATEGORIES ONLY
+const matchCategoryHeader = (text: string): string | null => {
+  if (!text) return null;
+  const lower = text.toLowerCase().trim();
+
+  if (lower.includes('brainstorm')) return 'Topics Brainstorming';
+  if (lower.includes('qa topic') || lower.includes('qa content') || lower === 'qa topics') return 'QA Topics Content';
+  if (lower.includes('hackathon')) return 'Hackathon';
+  if (lower.includes('india swag') || lower === 'swag') return 'India Swag';
+  if (lower.includes('miscellaneous') || lower === 'misc') return 'Miscellaneous';
+
+  return null;
+};
 
 // Safe Date Converter to prevent RangeError crashes
 const parseExcelDate = (val: any): string => {
@@ -46,7 +49,7 @@ const parseExcelDate = (val: any): string => {
       return d.toISOString();
     }
   } catch (e) {
-    // Fallback to current time if parsing fails
+    // Fallback
   }
   return new Date().toISOString();
 };
@@ -209,7 +212,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Bulletproof Sequential 2D Matrix Excel Parser
+  // Excel Parser with Strict 5-Category Matching
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -268,23 +271,20 @@ export default function EKORunbookPage() {
           const rawTitle = colMap.title >= 0 && cellStrings[colMap.title] ? cellStrings[colMap.title] : cellStrings[0];
           if (!rawTitle || rawTitle === '') continue;
 
+          // 2. Strict Check: Is this row one of our 5 Allowed Section Categories?
+          const matchedCat = matchCategoryHeader(rawTitle);
+          if (matchedCat && (nonEmpCells.length <= 2 || rawTitle.length < 35)) {
+            currentCategory = matchedCat;
+            continue; // DO NOT add as a task card! Update category container and proceed.
+          }
+
+          // 3. Process regular task row under active currentCategory
           const personVal = colMap.person >= 0 ? cellStrings[colMap.person] : '';
           const teamVal = colMap.team >= 0 ? cellStrings[colMap.team] : '';
           const dateVal = colMap.date >= 0 ? row[colMap.date] : '';
           const statusVal = colMap.status >= 0 ? cellStrings[colMap.status] : '';
           const notesVal = colMap.notes >= 0 ? cellStrings[colMap.notes] : '';
 
-          // 2. Section Header / Category Check
-          const lowerTitle = rawTitle.toLowerCase();
-          const isCategoryKeyword = CATEGORY_KEYWORDS.some((kw) => lowerTitle.includes(kw));
-          const hasNoTaskMetadata = !personVal && !teamVal && !dateVal && !statusVal;
-
-          if (isCategoryKeyword || (hasNoTaskMetadata && nonEmpCells.length <= 2)) {
-            currentCategory = rawTitle;
-            continue; // DO NOT add category headers as task cards!
-          }
-
-          // 3. Task Row Processing with Safe Date Parsing
           const scheduled_at = parseExcelDate(dateVal);
           const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(statusVal.toLowerCase());
 
@@ -308,7 +308,7 @@ export default function EKORunbookPage() {
           if (error) {
             setUploadStatus(`Error importing: ${error.message}`);
           } else {
-            setUploadStatus(`Successfully imported ${mappedRows.length} activities grouped under categories!`);
+            setUploadStatus(`Successfully imported ${mappedRows.length} activities strictly across your 5 categories!`);
             fetchTasks();
           }
         } else {
@@ -324,7 +324,7 @@ export default function EKORunbookPage() {
     e.target.value = '';
   };
 
-  // Helper function to group tasks by Category/Subtask
+  // Group tasks strictly by Category
   const groupByCategory = (taskList: EKOTask[]) => {
     const groups: { [key: string]: EKOTask[] } = {};
     taskList.forEach((task) => {
