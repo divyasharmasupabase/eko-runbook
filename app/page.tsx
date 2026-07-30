@@ -16,13 +16,15 @@ interface EKOTask {
   notes: string;
 }
 
-const KNOWN_HEADERS = [
-  'topics brainstorm',
-  'topics brainstorming',
-  'qa topics content',
+const CATEGORY_KEYWORDS = [
+  'brainstorm',
+  'qa topic',
+  'qa content',
   'hackathon',
-  'india swag',
-  'miscellaneous'
+  'swag',
+  'miscellaneous',
+  'misc',
+  'topics'
 ];
 
 export default function EKORunbookPage() {
@@ -183,7 +185,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Sequential 2D Matrix Excel Parser
+  // Robust Sequential 2D Matrix Excel Parser
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -199,10 +201,10 @@ export default function EKORunbookPage() {
         const workbook = XLSX.read(buffer, { type: 'array' });
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
         
-        // Read sheet as raw 2D row array
+        // Read sheet as raw 2D matrix
         const matrix: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
 
-        let currentCategory = '';
+        let currentCategory = 'Topics Brainstorming';
         let colMap = { title: 0, person: -1, team: -1, date: -1, status: -1, notes: -1 };
         const mappedRows: any[] = [];
 
@@ -217,7 +219,7 @@ export default function EKORunbookPage() {
 
           const rowCombinedLower = cellStrings.join(' ').toLowerCase();
 
-          // 1. Detect Column Headers Row (e.g., Activity | Assigned Person | Team | Status)
+          // 1. Detect Column Headers Row
           if (
             rowCombinedLower.includes('activity') ||
             rowCombinedLower.includes('assigned') ||
@@ -236,18 +238,8 @@ export default function EKORunbookPage() {
             continue; // Skip the column header row itself
           }
 
-          // 2. Check if this row is a Section Category Header
-          const isKnownCategory = KNOWN_HEADERS.some((kh) => rowCombinedLower.includes(kh));
-          const isSingleCellHeader = nonEmpCells.length === 1 && !cellStrings[0].includes('/');
-
-          if (isKnownCategory || isSingleCellHeader) {
-            currentCategory = cellStrings.find((s) => s !== '') || currentCategory;
-            continue; // DO NOT add category headers as task rows!
-          }
-
-          // 3. Process Task Row
-          const title = colMap.title >= 0 ? cellStrings[colMap.title] : cellStrings[0];
-          if (!title || title === '') continue;
+          const rawTitle = colMap.title >= 0 && cellStrings[colMap.title] ? cellStrings[colMap.title] : cellStrings[0];
+          if (!rawTitle || rawTitle === '') continue;
 
           const person = colMap.person >= 0 ? cellStrings[colMap.person] : '';
           const team = colMap.team >= 0 ? cellStrings[colMap.team] : '';
@@ -255,11 +247,22 @@ export default function EKORunbookPage() {
           const statusRaw = colMap.status >= 0 ? cellStrings[colMap.status] : '';
           const notes = colMap.notes >= 0 ? cellStrings[colMap.notes] : '';
 
+          // 2. Check if this row is a Section Category Header
+          const lowerTitle = rawTitle.toLowerCase();
+          const isCategoryKeyword = CATEGORY_KEYWORDS.some((kw) => lowerTitle.includes(kw));
+          const hasNoMetadata = !person && !team && !dateRaw && !statusRaw;
+
+          if (isCategoryKeyword && (hasNoMetadata || nonEmpCells.length <= 2)) {
+            currentCategory = rawTitle;
+            continue; // DO NOT add category headers as task cards!
+          }
+
+          // 3. Process Task Row
           const scheduled_at = dateRaw && !isNaN(Date.parse(dateRaw)) ? new Date(dateRaw).toISOString() : new Date().toISOString();
           const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(statusRaw.toLowerCase());
 
           mappedRows.push({
-            title,
+            title: rawTitle,
             subtask: currentCategory || 'Miscellaneous',
             assigned_to: person || 'Unassigned Person',
             team: team || 'Unassigned Team',
@@ -553,7 +556,6 @@ export default function EKORunbookPage() {
               ) : (
                 Object.entries(activeGrouped).map(([categoryName, groupTasks]) => (
                   <div key={categoryName} className="space-y-3 bg-slate-950/40 p-3.5 rounded-2xl border border-slate-800">
-                    {/* Visual Category Header Divider */}
                     <div className="flex items-center justify-between bg-purple-950/60 border border-purple-800/50 p-2.5 rounded-xl">
                       <div className="flex items-center gap-2">
                         <Folder size={16} className="text-purple-400" />
