@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import * as XLSX from 'xlsx';
-import { CheckCircle2, Circle, Clock, Upload, Plus, AlertCircle, Users, User, Flame, Edit3, Save, X, CheckCheck, FileText, Trash2, LayoutList, Tag, Calendar } from 'lucide-react';
+import { CheckCircle2, Circle, Clock, Upload, Plus, AlertCircle, Users, User, Flame, Edit3, Save, X, CheckCheck, FileText, Trash2, LayoutList, Tag, Calendar, Folder } from 'lucide-react';
 
 interface EKOTask {
   id: string;
@@ -15,6 +15,14 @@ interface EKOTask {
   is_completed: boolean;
   notes: string;
 }
+
+const KNOWN_HEADERS = [
+  'topics brainstorm',
+  'qa topics content',
+  'hackathon',
+  'india swag',
+  'miscellaneous'
+];
 
 export default function EKORunbookPage() {
   const [tasks, setTasks] = useState<EKOTask[]>([]);
@@ -113,7 +121,7 @@ export default function EKORunbookPage() {
     const { error } = await supabase.from('eko_tasks').insert([
       {
         title: newTitle,
-        subtask: '',
+        subtask: 'General',
         assigned_to: newAssigned || 'Unassigned Person',
         team: newTeam || 'Unassigned Team',
         scheduled_at: new Date(newScheduled).toISOString(),
@@ -174,7 +182,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Excel Import with Blank Row Filtering & Checkbox 'Yes' Support
+  // Smart Sequential Excel Parser
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -191,42 +199,55 @@ export default function EKORunbookPage() {
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
         const jsonRows: any[] = XLSX.utils.sheet_to_json(firstSheet);
 
-        // 1. Filter out completely blank rows or rows without any task/activity title
-        const validRows = jsonRows.filter((row) => {
-          const rawTitle = row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || row.Topic || row.Category;
-          return rawTitle && String(rawTitle).trim() !== '';
-        });
+        let currentCategory = 'General';
+        const mappedRows: any[] = [];
 
-        const mappedRows = validRows.map((row) => {
-          const title = String(row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || 'Task').trim();
-          
-          // Category / Topic mapping
-          const subtask = String(row.Category || row.Topic || row.Subtask || row['Sub Task'] || row['Sub-task'] || row.SubActivity || '').trim();
-          
-          const assigned_to = String(row['Assigned Person'] || row.Person || row['Assigned To'] || row.Assigned || row.Owner || 'Unassigned Person').trim();
-          const team = String(row.Team || row['Assigned Team'] || row.Department || row.Group || 'Unassigned Team').trim();
+        jsonRows.forEach((row) => {
+          const rawTitle = String(
+            row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || row.Topic || row.Category || row.__EMPTY || ''
+          ).trim();
+
+          if (!rawTitle) return;
+
+          const lowerTitle = rawTitle.toLowerCase();
+
+          const hasPerson = row['Assigned Person'] || row.Person || row['Assigned To'] || row.Assigned || row.Owner;
+          const hasTeam = row.Team || row['Assigned Team'] || row.Department || row.Group;
+          const hasDate = row.Time || row.Schedule || row.Date || row['Due Date'] || row['Due Date / Time'];
+          const hasStatus = row.Status || row.Done || row.Completed || row['Is Completed'] || row.Checkbox || row.State || row['Checkbox Status'];
+
+          const isExplicitKnownHeader = KNOWN_HEADERS.some((kh) => lowerTitle.includes(kh));
+          const isHeaderSectionDivider = isExplicitKnownHeader || (!hasPerson && !hasTeam && !hasDate && !hasStatus);
+
+          if (isHeaderSectionDivider) {
+            currentCategory = rawTitle;
+            return;
+          }
+
+          const explicitCategory = String(row.Category || row.Topic || row.Subtask || row['Sub Task'] || '').trim();
+          const categoryTag = explicitCategory || currentCategory;
+
+          const assigned_to = String(hasPerson || 'Unassigned Person').trim();
+          const team = String(hasTeam || 'Unassigned Team').trim();
           const notes = String(row.Notes || row.Comments || row.Details || row.Description || '').trim();
           
-          const timeRaw = row.Time || row.Schedule || row.Date || row['Due Date'] || row['Due Date / Time'];
-          const scheduled_at = timeRaw ? new Date(timeRaw).toISOString() : new Date().toISOString();
+          const scheduled_at = hasDate ? new Date(hasDate).toISOString() : new Date().toISOString();
 
-          // Checkbox / State / Status mapping (handles "yes", "true", "x", 1, checked, etc.)
-          const rawStatus = row.Status || row.Done || row.Completed || row['Is Completed'] || row.Checkbox || row.State || row['Checkbox Status'];
           const is_completed = 
-            rawStatus === true || 
-            rawStatus === 1 ||
-            (typeof rawStatus === 'string' && 
-              ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(rawStatus.trim().toLowerCase()));
+            hasStatus === true || 
+            hasStatus === 1 ||
+            (typeof hasStatus === 'string' && 
+              ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(hasStatus.trim().toLowerCase()));
 
-          return {
-            title,
-            subtask,
+          mappedRows.push({
+            title: rawTitle,
+            subtask: categoryTag,
             assigned_to,
             team,
             scheduled_at,
             notes,
             is_completed,
-          };
+          });
         });
 
         if (mappedRows.length > 0) {
@@ -242,7 +263,7 @@ export default function EKORunbookPage() {
             fetchTasks();
           }
         } else {
-          setUploadStatus('No valid non-blank rows found in the sheet.');
+          setUploadStatus('No valid tasks found in the sheet.');
         }
       } catch (err) {
         setUploadStatus('Failed to parse file.');
@@ -253,46 +274,53 @@ export default function EKORunbookPage() {
     e.target.value = '';
   };
 
-  // Extract Unique Assigned Persons for Tabs
+  // Helper function to group tasks by Category/Subtask
+  const groupByCategory = (taskList: EKOTask[]) => {
+    const groups: { [key: string]: EKOTask[] } = {};
+    taskList.forEach((task) => {
+      const cat = task.subtask || 'General';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(task);
+    });
+    return groups;
+  };
+
   const uniquePersons = Array.from(
     new Set(tasks.map((t) => t.assigned_to).filter((p) => p && p.trim() !== ''))
   ).sort();
 
-  // Filter tasks based on active tab
   const filteredTasks = activeTab === 'ALL' 
     ? tasks 
     : tasks.filter((t) => t.assigned_to.toLowerCase() === activeTab.toLowerCase());
 
-  // Helper to format date string to "MMM DD, YYYY"
   const getDateKey = (dateStr: string) => {
     if (!dateStr) return '';
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  // Uncompleted tasks sorted chronologically
   const uncompletedTasks = filteredTasks
     .filter((t) => !t.is_completed)
     .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
 
-  // Top 2 unique upcoming dates
   const uniqueUpcomingDates = Array.from(
     new Set(uncompletedTasks.map((t) => getDateKey(t.scheduled_at)))
   ).slice(0, 2);
 
-  // Group uncompleted tasks by those top 2 dates
   const upcomingTasksByDateGroup = uniqueUpcomingDates.map((dateKey) => ({
     dateKey,
     items: uncompletedTasks.filter((t) => getDateKey(t.scheduled_at) === dateKey),
   }));
 
-  // Helper: Check if a task falls into top 2 upcoming dates
   const isTaskInTopUpcomingDates = (scheduledAt: string) => {
     return uniqueUpcomingDates.includes(getDateKey(scheduledAt));
   };
 
   const activeTasks = filteredTasks.filter((t) => !t.is_completed);
   const doneTasks = filteredTasks.filter((t) => t.is_completed);
+
+  const activeGrouped = groupByCategory(activeTasks);
+  const doneGrouped = groupByCategory(doneTasks);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 sm:p-8">
@@ -387,11 +415,6 @@ export default function EKORunbookPage() {
                 {activeTab === 'ALL' ? 'Upcoming Activities (Latest 2 Event Dates)' : `Upcoming Dates for ${activeTab}`}
               </h2>
             </div>
-            {activeTab !== 'ALL' && (
-              <span className="text-xs text-orange-400 bg-orange-500/10 px-2.5 py-1 rounded-md border border-orange-500/30 font-medium">
-                Filtered View
-              </span>
-            )}
           </div>
 
           {upcomingTasksByDateGroup.length === 0 ? (
@@ -440,7 +463,7 @@ export default function EKORunbookPage() {
           )}
         </div>
 
-        {/* Add Activity Form (Subtask field removed) */}
+        {/* Add Activity Form */}
         <form onSubmit={handleAddTask} className="bg-slate-800 border border-slate-700 p-4 rounded-xl grid grid-cols-1 md:grid-cols-3 gap-3 shadow-lg">
           <input
             type="text"
@@ -486,16 +509,16 @@ export default function EKORunbookPage() {
           </button>
         </form>
 
-        {/* TWO-COLUMN BOARD VIEW */}
+        {/* TWO-COLUMN BOARD VIEW split into visual Category Sections */}
         {loading ? (
           <p className="text-slate-500 text-center py-10">Loading runbook activities...</p>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             
-            {/* COLUMN 1: ACTIVE TASKS */}
-            <div className="space-y-3">
+            {/* COLUMN 1: PENDING TASKS GROUPED BY CATEGORY */}
+            <div className="space-y-6">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                <h3 className="font-bold text-slate-200 flex items-center gap-2">
+                <h3 className="font-bold text-slate-200 flex items-center gap-2 text-base">
                   <Clock size={18} className="text-emerald-400" />
                   To Do / Pending ({activeTab === 'ALL' ? 'All' : activeTab})
                 </h3>
@@ -504,167 +527,176 @@ export default function EKORunbookPage() {
                 </span>
               </div>
 
-              {activeTasks.length === 0 ? (
+              {Object.keys(activeGrouped).length === 0 ? (
                 <div className="text-center py-8 border border-dashed border-slate-800 rounded-xl text-slate-500 text-sm">
                   No pending activities for this view!
                 </div>
               ) : (
-                activeTasks.map((task) => {
-                  const isUpcomingDateTask = isTaskInTopUpcomingDates(task.scheduled_at);
-
-                  return (
-                    <div
-                      key={task.id}
-                      className={`p-4 rounded-xl border transition-all flex items-start justify-between gap-3 ${
-                        isUpcomingDateTask
-                          ? 'bg-gradient-to-r from-orange-950/40 via-slate-800 to-slate-800 border-orange-500/80 shadow-lg shadow-orange-950/30 ring-1 ring-orange-500/50'
-                          : 'bg-slate-800/80 border-slate-700 hover:border-slate-600'
-                      }`}
-                    >
-                      <div className="flex items-start gap-3 w-full">
-                        <button
-                          onClick={() => toggleTask(task.id, task.is_completed)}
-                          className="mt-1 text-slate-400 hover:text-emerald-400 transition-colors shrink-0"
-                        >
-                          <Circle size={22} />
-                        </button>
-
-                        <div className="space-y-2 w-full">
-                          <div className="flex items-center justify-between gap-2">
-                            <h4 className={`font-semibold text-sm ${isUpcomingDateTask ? 'text-orange-100' : 'text-slate-100'}`}>
-                              {task.title}
-                            </h4>
-
-                            {isUpcomingDateTask && (
-                              <span className="text-[10px] font-bold text-orange-300 bg-orange-500/20 px-2 py-0.5 rounded border border-orange-500/40 flex items-center gap-1 shrink-0">
-                                <Flame size={10} /> Upcoming Date
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Category Badge if imported from Excel */}
-                          {task.subtask && editingId !== task.id && (
-                            <div className="flex items-center gap-1.5 text-xs text-purple-300 font-medium bg-purple-950/60 px-2.5 py-1 rounded-md border border-purple-800/50 w-fit">
-                              <Tag size={13} className="text-purple-400" />
-                              <span>{task.subtask}</span>
-                            </div>
-                          )}
-
-                          {editingId === task.id ? (
-                            <div className="bg-slate-900 border border-slate-700 p-3 rounded-lg space-y-2 text-xs">
-                              <div>
-                                <label className="text-slate-400 block mb-1">Task Title</label>
-                                <input
-                                  type="text"
-                                  value={editTitle}
-                                  onChange={(e) => setEditTitle(e.target.value)}
-                                  className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
-                                />
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-2">
-                                <div>
-                                  <label className="text-slate-400 block mb-1">Team</label>
-                                  <input
-                                    type="text"
-                                    value={editTeam}
-                                    onChange={(e) => setEditTeam(e.target.value)}
-                                    className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-slate-400 block mb-1">Person</label>
-                                  <input
-                                    type="text"
-                                    value={editAssigned}
-                                    onChange={(e) => setEditAssigned(e.target.value)}
-                                    className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
-                                  />
-                                </div>
-                              </div>
-
-                              <div>
-                                <label className="text-slate-400 block mb-1">Due Date & Time</label>
-                                <input
-                                  type="datetime-local"
-                                  value={editScheduled}
-                                  onChange={(e) => setEditScheduled(e.target.value)}
-                                  className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="text-slate-400 block mb-1">Notes</label>
-                                <textarea
-                                  value={editNotes}
-                                  onChange={(e) => setEditNotes(e.target.value)}
-                                  rows={2}
-                                  className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
-                                />
-                              </div>
-
-                              <div className="flex items-center gap-2 pt-1">
-                                <button
-                                  onClick={() => saveAssignment(task.id)}
-                                  className="bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-500 flex items-center gap-1"
-                                >
-                                  <Save size={12} /> Save
-                                </button>
-                                <button
-                                  onClick={() => setEditingId(null)}
-                                  className="bg-slate-700 text-slate-300 px-3 py-1 rounded hover:bg-slate-600 flex items-center gap-1"
-                                >
-                                  <X size={12} /> Cancel
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <>
-                              {task.notes && (
-                                <p className="text-xs text-slate-300 bg-slate-900/80 border border-slate-800 p-2 rounded-lg flex items-start gap-1.5">
-                                  <FileText size={13} className="text-amber-400 shrink-0 mt-0.5" />
-                                  <span>{task.notes}</span>
-                                </p>
-                              )}
-
-                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 pt-1">
-                                <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800'}`}>
-                                  <Clock size={12} />
-                                  {new Date(task.scheduled_at).toLocaleString([], {
-                                    dateStyle: 'short',
-                                    timeStyle: 'short',
-                                  })}
-                                </span>
-
-                                <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-emerald-300">
-                                  <Users size={12} /> {task.team}
-                                </span>
-
-                                <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-sky-300">
-                                  <User size={12} /> {task.assigned_to}
-                                </span>
-
-                                <button
-                                  onClick={() => startEditing(task)}
-                                  className="text-slate-500 hover:text-slate-300 p-0.5 flex items-center gap-1 text-[11px] bg-slate-900 px-2 py-0.5 rounded border border-slate-800"
-                                >
-                                  <Edit3 size={11} /> Edit
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
+                Object.entries(activeGrouped).map(([categoryName, groupTasks]) => (
+                  <div key={categoryName} className="space-y-3 bg-slate-950/40 p-3.5 rounded-2xl border border-slate-800">
+                    {/* Visual Category Header Divider */}
+                    <div className="flex items-center justify-between bg-purple-950/60 border border-purple-800/50 p-2.5 rounded-xl">
+                      <div className="flex items-center gap-2">
+                        <Folder size={16} className="text-purple-400" />
+                        <h4 className="font-bold text-xs uppercase tracking-wider text-purple-200">{categoryName}</h4>
                       </div>
+                      <span className="bg-purple-900/80 text-purple-300 text-[11px] px-2 py-0.5 rounded-full font-semibold">
+                        {groupTasks.length}
+                      </span>
                     </div>
-                  );
-                })
+
+                    <div className="space-y-3">
+                      {groupTasks.map((task) => {
+                        const isUpcomingDateTask = isTaskInTopUpcomingDates(task.scheduled_at);
+
+                        return (
+                          <div
+                            key={task.id}
+                            className={`p-4 rounded-xl border transition-all flex items-start justify-between gap-3 ${
+                              isUpcomingDateTask
+                                ? 'bg-gradient-to-r from-orange-950/40 via-slate-800 to-slate-800 border-orange-500/80 shadow-lg shadow-orange-950/30 ring-1 ring-orange-500/50'
+                                : 'bg-slate-800/80 border-slate-700 hover:border-slate-600'
+                            }`}
+                          >
+                            <div className="flex items-start gap-3 w-full">
+                              <button
+                                onClick={() => toggleTask(task.id, task.is_completed)}
+                                className="mt-1 text-slate-400 hover:text-emerald-400 transition-colors shrink-0"
+                              >
+                                <Circle size={22} />
+                              </button>
+
+                              <div className="space-y-2 w-full">
+                                <div className="flex items-center justify-between gap-2">
+                                  <h5 className={`font-semibold text-sm ${isUpcomingDateTask ? 'text-orange-100' : 'text-slate-100'}`}>
+                                    {task.title}
+                                  </h5>
+
+                                  {isUpcomingDateTask && (
+                                    <span className="text-[10px] font-bold text-orange-300 bg-orange-500/20 px-2 py-0.5 rounded border border-orange-500/40 flex items-center gap-1 shrink-0">
+                                      <Flame size={10} /> Upcoming Date
+                                    </span>
+                                  )}
+                                </div>
+
+                                {editingId === task.id ? (
+                                  <div className="bg-slate-900 border border-slate-700 p-3 rounded-lg space-y-2 text-xs">
+                                    <div>
+                                      <label className="text-slate-400 block mb-1">Task Title</label>
+                                      <input
+                                        type="text"
+                                        value={editTitle}
+                                        onChange={(e) => setEditTitle(e.target.value)}
+                                        className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
+                                      />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div>
+                                        <label className="text-slate-400 block mb-1">Team</label>
+                                        <input
+                                          type="text"
+                                          value={editTeam}
+                                          onChange={(e) => setEditTeam(e.target.value)}
+                                          className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="text-slate-400 block mb-1">Person</label>
+                                        <input
+                                          type="text"
+                                          value={editAssigned}
+                                          onChange={(e) => setEditAssigned(e.target.value)}
+                                          className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div>
+                                      <label className="text-slate-400 block mb-1">Due Date & Time</label>
+                                      <input
+                                        type="datetime-local"
+                                        value={editScheduled}
+                                        onChange={(e) => setEditScheduled(e.target.value)}
+                                        className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
+                                      />
+                                    </div>
+
+                                    <div>
+                                      <label className="text-slate-400 block mb-1">Notes</label>
+                                      <textarea
+                                        value={editNotes}
+                                        onChange={(e) => setEditNotes(e.target.value)}
+                                        rows={2}
+                                        className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
+                                      />
+                                    </div>
+
+                                    <div className="flex items-center gap-2 pt-1">
+                                      <button
+                                        onClick={() => saveAssignment(task.id)}
+                                        className="bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-500 flex items-center gap-1"
+                                      >
+                                        <Save size={12} /> Save
+                                      </button>
+                                      <button
+                                        onClick={() => setEditingId(null)}
+                                        className="bg-slate-700 text-slate-300 px-3 py-1 rounded hover:bg-slate-600 flex items-center gap-1"
+                                      >
+                                        <X size={12} /> Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {task.notes && (
+                                      <p className="text-xs text-slate-300 bg-slate-900/80 border border-slate-800 p-2 rounded-lg flex items-start gap-1.5">
+                                        <FileText size={13} className="text-amber-400 shrink-0 mt-0.5" />
+                                        <span>{task.notes}</span>
+                                      </p>
+                                    )}
+
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 pt-1">
+                                      <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800'}`}>
+                                        <Clock size={12} />
+                                        {new Date(task.scheduled_at).toLocaleString([], {
+                                          dateStyle: 'short',
+                                          timeStyle: 'short',
+                                        })}
+                                      </span>
+
+                                      <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-emerald-300">
+                                        <Users size={12} /> {task.team}
+                                      </span>
+
+                                      <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-sky-300">
+                                        <User size={12} /> {task.assigned_to}
+                                      </span>
+
+                                      <button
+                                        onClick={() => startEditing(task)}
+                                        className="text-slate-500 hover:text-slate-300 p-0.5 flex items-center gap-1 text-[11px] bg-slate-900 px-2 py-0.5 rounded border border-slate-800"
+                                      >
+                                        <Edit3 size={11} /> Edit
+                                      </button>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
               )}
             </div>
 
-            {/* COLUMN 2: COMPLETED TASKS */}
-            <div className="space-y-3">
+            {/* COLUMN 2: COMPLETED TASKS GROUPED BY CATEGORY */}
+            <div className="space-y-6">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                <h3 className="font-bold text-slate-200 flex items-center gap-2">
+                <h3 className="font-bold text-slate-200 flex items-center gap-2 text-base">
                   <CheckCheck size={18} className="text-emerald-400" />
                   Completed Column ({activeTab === 'ALL' ? 'All' : activeTab})
                 </h3>
@@ -673,58 +705,67 @@ export default function EKORunbookPage() {
                 </span>
               </div>
 
-              {doneTasks.length === 0 ? (
+              {Object.keys(doneGrouped).length === 0 ? (
                 <div className="text-center py-8 border border-dashed border-slate-800 rounded-xl text-slate-500 text-sm">
                   Completed tasks will move here automatically!
                 </div>
               ) : (
-                doneTasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className="p-4 rounded-xl border bg-slate-950/60 border-slate-800/80 opacity-75 flex items-start justify-between gap-3"
-                  >
-                    <div className="flex items-start gap-3 w-full">
-                      <button
-                        onClick={() => toggleTask(task.id, task.is_completed)}
-                        className="mt-1 text-emerald-400 hover:text-slate-400 transition-colors shrink-0"
-                      >
-                        <CheckCircle2 size={22} />
-                      </button>
-
-                      <div className="space-y-1 w-full">
-                        <h4 className="font-semibold text-slate-400 line-through text-sm">{task.title}</h4>
-                        
-                        {task.subtask && (
-                          <div className="flex items-center gap-1.5 text-xs text-purple-400/80 font-medium bg-purple-950/30 px-2 py-0.5 rounded border border-purple-900/40 w-fit">
-                            <Tag size={12} />
-                            <span>{task.subtask}</span>
-                          </div>
-                        )}
-
-                        {task.notes && (
-                          <p className="text-xs text-slate-500 italic bg-slate-900/50 p-1.5 rounded">
-                            "{task.notes}"
-                          </p>
-                        )}
-
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 pt-1">
-                          <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                            <Clock size={12} />
-                            {new Date(task.scheduled_at).toLocaleString([], {
-                              dateStyle: 'short',
-                              timeStyle: 'short',
-                            })}
-                          </span>
-
-                          <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-400">
-                            <Users size={12} /> {task.team}
-                          </span>
-
-                          <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-400">
-                            <User size={12} /> {task.assigned_to}
-                          </span>
-                        </div>
+                Object.entries(doneGrouped).map(([categoryName, groupTasks]) => (
+                  <div key={categoryName} className="space-y-3 bg-slate-950/40 p-3.5 rounded-2xl border border-slate-800 opacity-80">
+                    <div className="flex items-center justify-between bg-emerald-950/40 border border-emerald-800/40 p-2.5 rounded-xl">
+                      <div className="flex items-center gap-2">
+                        <Folder size={16} className="text-emerald-400" />
+                        <h4 className="font-bold text-xs uppercase tracking-wider text-emerald-200">{categoryName}</h4>
                       </div>
+                      <span className="bg-emerald-900/80 text-emerald-300 text-[11px] px-2 py-0.5 rounded-full font-semibold">
+                        {groupTasks.length}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {groupTasks.map((task) => (
+                        <div
+                          key={task.id}
+                          className="p-3.5 rounded-xl border bg-slate-950/60 border-slate-800/80 flex items-start justify-between gap-3"
+                        >
+                          <div className="flex items-start gap-3 w-full">
+                            <button
+                              onClick={() => toggleTask(task.id, task.is_completed)}
+                              className="mt-1 text-emerald-400 hover:text-slate-400 transition-colors shrink-0"
+                            >
+                              <CheckCircle2 size={20} />
+                            </button>
+
+                            <div className="space-y-1 w-full">
+                              <h5 className="font-semibold text-slate-400 line-through text-xs">{task.title}</h5>
+
+                              {task.notes && (
+                                <p className="text-xs text-slate-500 italic bg-slate-900/50 p-1.5 rounded">
+                                  "{task.notes}"
+                                </p>
+                              )}
+
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 pt-1">
+                                <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                  <Clock size={11} />
+                                  {new Date(task.scheduled_at).toLocaleString([], {
+                                    dateStyle: 'short',
+                                    timeStyle: 'short',
+                                  })}
+                                </span>
+
+                                <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-400">
+                                  <Users size={11} /> {task.team}
+                                </span>
+
+                                <span className="flex items-center gap-1 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-400">
+                                  <User size={11} /> {task.assigned_to}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))
