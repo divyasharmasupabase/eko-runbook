@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import * as XLSX from 'xlsx';
-import { CheckCircle2, Circle, Clock, Upload, Plus, AlertCircle, Users, User, Flame, Edit3, Save, X, CheckCheck, FileText, Trash2, LayoutList, Layers, Calendar } from 'lucide-react';
+import { CheckCircle2, Circle, Clock, Upload, Plus, AlertCircle, Users, User, Flame, Edit3, Save, X, CheckCheck, FileText, Trash2, LayoutList, Tag, Calendar } from 'lucide-react';
 
 interface EKOTask {
   id: string;
@@ -25,7 +25,6 @@ export default function EKORunbookPage() {
 
   // New Task Form State
   const [newTitle, setNewTitle] = useState('');
-  const [newSubtask, setNewSubtask] = useState('');
   const [newAssigned, setNewAssigned] = useState('');
   const [newTeam, setNewTeam] = useState('');
   const [newScheduled, setNewScheduled] = useState('');
@@ -34,7 +33,6 @@ export default function EKORunbookPage() {
   // Task Editing State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
-  const [editSubtask, setEditSubtask] = useState('');
   const [editAssigned, setEditAssigned] = useState('');
   const [editTeam, setEditTeam] = useState('');
   const [editScheduled, setEditScheduled] = useState('');
@@ -115,7 +113,7 @@ export default function EKORunbookPage() {
     const { error } = await supabase.from('eko_tasks').insert([
       {
         title: newTitle,
-        subtask: newSubtask || '',
+        subtask: '',
         assigned_to: newAssigned || 'Unassigned Person',
         team: newTeam || 'Unassigned Team',
         scheduled_at: new Date(newScheduled).toISOString(),
@@ -126,7 +124,6 @@ export default function EKORunbookPage() {
 
     if (!error) {
       setNewTitle('');
-      setNewSubtask('');
       setNewAssigned('');
       setNewTeam('');
       setNewScheduled('');
@@ -138,7 +135,6 @@ export default function EKORunbookPage() {
   const startEditing = (task: EKOTask) => {
     setEditingId(task.id);
     setEditTitle(task.title);
-    setEditSubtask(task.subtask || '');
     setEditAssigned(task.assigned_to);
     setEditTeam(task.team);
     setEditScheduled(toDatetimeLocal(task.scheduled_at));
@@ -155,7 +151,6 @@ export default function EKORunbookPage() {
           ? {
               ...t,
               title: editTitle,
-              subtask: editSubtask,
               assigned_to: editAssigned,
               team: editTeam,
               scheduled_at: updatedScheduledAt,
@@ -169,7 +164,6 @@ export default function EKORunbookPage() {
       .from('eko_tasks')
       .update({
         title: editTitle,
-        subtask: editSubtask,
         assigned_to: editAssigned || 'Unassigned Person',
         team: editTeam || 'Unassigned Team',
         scheduled_at: updatedScheduledAt,
@@ -180,7 +174,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Excel Import
+  // Excel Import with Blank Row Filtering & Checkbox 'Yes' Support
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -197,17 +191,27 @@ export default function EKORunbookPage() {
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
         const jsonRows: any[] = XLSX.utils.sheet_to_json(firstSheet);
 
-        const mappedRows = jsonRows.map((row) => {
-          const title = row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || 'Unnamed Task';
-          const subtask = row.Subtask || row['Sub Task'] || row['Sub-task'] || row.SubActivity || row['Sub Activity'] || row['Sub-Activity'] || '';
-          const assigned_to = row['Assigned Person'] || row.Person || row['Assigned To'] || row.Assigned || row.Owner || 'Unassigned Person';
-          const team = row.Team || row['Assigned Team'] || row.Department || row.Group || 'Unassigned Team';
-          const notes = row.Notes || row.Comments || row.Details || row.Description || '';
+        // 1. Filter out completely blank rows or rows without any task/activity title
+        const validRows = jsonRows.filter((row) => {
+          const rawTitle = row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || row.Topic || row.Category;
+          return rawTitle && String(rawTitle).trim() !== '';
+        });
+
+        const mappedRows = validRows.map((row) => {
+          const title = String(row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || 'Task').trim();
+          
+          // Category / Topic mapping
+          const subtask = String(row.Category || row.Topic || row.Subtask || row['Sub Task'] || row['Sub-task'] || row.SubActivity || '').trim();
+          
+          const assigned_to = String(row['Assigned Person'] || row.Person || row['Assigned To'] || row.Assigned || row.Owner || 'Unassigned Person').trim();
+          const team = String(row.Team || row['Assigned Team'] || row.Department || row.Group || 'Unassigned Team').trim();
+          const notes = String(row.Notes || row.Comments || row.Details || row.Description || '').trim();
           
           const timeRaw = row.Time || row.Schedule || row.Date || row['Due Date'] || row['Due Date / Time'];
           const scheduled_at = timeRaw ? new Date(timeRaw).toISOString() : new Date().toISOString();
 
-          const rawStatus = row.Status || row.Done || row.Completed || row['Is Completed'] || row.Checkbox || row.State;
+          // Checkbox / State / Status mapping (handles "yes", "true", "x", 1, checked, etc.)
+          const rawStatus = row.Status || row.Done || row.Completed || row['Is Completed'] || row.Checkbox || row.State || row['Checkbox Status'];
           const is_completed = 
             rawStatus === true || 
             rawStatus === 1 ||
@@ -216,11 +220,11 @@ export default function EKORunbookPage() {
 
           return {
             title,
-            subtask: String(subtask),
-            assigned_to: String(assigned_to),
-            team: String(team),
+            subtask,
+            assigned_to,
+            team,
             scheduled_at,
-            notes: String(notes),
+            notes,
             is_completed,
           };
         });
@@ -237,6 +241,8 @@ export default function EKORunbookPage() {
             setUploadStatus(`Successfully imported ${mappedRows.length} activities!`);
             fetchTasks();
           }
+        } else {
+          setUploadStatus('No valid non-blank rows found in the sheet.');
         }
       } catch (err) {
         setUploadStatus('Failed to parse file.');
@@ -247,7 +253,7 @@ export default function EKORunbookPage() {
     e.target.value = '';
   };
 
-  // Extract Unique Assigned Persons
+  // Extract Unique Assigned Persons for Tabs
   const uniquePersons = Array.from(
     new Set(tasks.map((t) => t.assigned_to).filter((p) => p && p.trim() !== ''))
   ).sort();
@@ -257,11 +263,7 @@ export default function EKORunbookPage() {
     ? tasks 
     : tasks.filter((t) => t.assigned_to.toLowerCase() === activeTab.toLowerCase());
 
-  // ---------------------------------------------------------------------------
-  // 📅 UPCOMING DATES & ORANGE HIGHLIGHT LOGIC
-  // ---------------------------------------------------------------------------
-
-  // Helper to format date string to "MMM DD, YYYY" (e.g. "Jul 21, 2026")
+  // Helper to format date string to "MMM DD, YYYY"
   const getDateKey = (dateStr: string) => {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -284,7 +286,7 @@ export default function EKORunbookPage() {
     items: uncompletedTasks.filter((t) => getDateKey(t.scheduled_at) === dateKey),
   }));
 
-  // Helper function: Check if a task falls into the top 2 upcoming dates
+  // Helper: Check if a task falls into top 2 upcoming dates
   const isTaskInTopUpcomingDates = (scheduledAt: string) => {
     return uniqueUpcomingDates.includes(getDateKey(scheduledAt));
   };
@@ -376,7 +378,7 @@ export default function EKORunbookPage() {
           })}
         </div>
 
-        {/* 🟧 UPCOMING TOP 2 DATES WIDGET */}
+        {/* UPCOMING TOP 2 DATES WIDGET */}
         <div className="bg-gradient-to-r from-orange-950/50 via-slate-800 to-slate-800 border-2 border-orange-500/60 rounded-2xl p-5 shadow-2xl shadow-orange-950/40">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -418,9 +420,9 @@ export default function EKORunbookPage() {
                         </div>
 
                         {task.subtask && (
-                          <div className="flex items-center gap-1 text-[11px] text-purple-300 font-medium bg-purple-950/40 px-2 py-0.5 rounded w-fit">
-                            <Layers size={10} />
-                            <span>Subtask: {task.subtask}</span>
+                          <div className="flex items-center gap-1 text-[11px] text-purple-300 font-medium bg-purple-950/40 px-2 py-0.5 rounded w-fit border border-purple-800/40">
+                            <Tag size={10} />
+                            <span>{task.subtask}</span>
                           </div>
                         )}
 
@@ -438,22 +440,22 @@ export default function EKORunbookPage() {
           )}
         </div>
 
-        {/* Add Activity Form */}
-        <form onSubmit={handleAddTask} className="bg-slate-800 border border-slate-700 p-4 rounded-xl grid grid-cols-1 md:grid-cols-4 gap-3 shadow-lg">
+        {/* Add Activity Form (Subtask field removed) */}
+        <form onSubmit={handleAddTask} className="bg-slate-800 border border-slate-700 p-4 rounded-xl grid grid-cols-1 md:grid-cols-3 gap-3 shadow-lg">
           <input
             type="text"
-            placeholder="Main Activity / Task..."
+            placeholder="Task Description / Topic Activity..."
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm md:col-span-2 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
             required
           />
           <input
-            type="text"
-            placeholder="Subtask (e.g. Topics Brainstorming)"
-            value={newSubtask}
-            onChange={(e) => setNewSubtask(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 md:col-span-2"
+            type="datetime-local"
+            value={newScheduled}
+            onChange={(e) => setNewScheduled(e.target.value)}
+            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            required
           />
           <input
             type="text"
@@ -470,22 +472,15 @@ export default function EKORunbookPage() {
             className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
           <input
-            type="datetime-local"
-            value={newScheduled}
-            onChange={(e) => setNewScheduled(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 md:col-span-2"
-            required
-          />
-          <input
             type="text"
             placeholder="Notes / Additional details..."
             value={newNotes}
             onChange={(e) => setNewNotes(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 md:col-span-2"
+            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
           <button
             type="submit"
-            className="md:col-span-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors"
+            className="md:col-span-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors"
           >
             <Plus size={18} /> Add Activity
           </button>
@@ -515,7 +510,6 @@ export default function EKORunbookPage() {
                 </div>
               ) : (
                 activeTasks.map((task) => {
-                  // Check if task falls on top 2 upcoming dates for ORANGE HIGHLIGHTING
                   const isUpcomingDateTask = isTaskInTopUpcomingDates(task.scheduled_at);
 
                   return (
@@ -548,32 +542,22 @@ export default function EKORunbookPage() {
                             )}
                           </div>
 
-                          {/* Subtask Badge */}
+                          {/* Category Badge if imported from Excel */}
                           {task.subtask && editingId !== task.id && (
                             <div className="flex items-center gap-1.5 text-xs text-purple-300 font-medium bg-purple-950/60 px-2.5 py-1 rounded-md border border-purple-800/50 w-fit">
-                              <Layers size={13} className="text-purple-400" />
-                              <span>Subtask: {task.subtask}</span>
+                              <Tag size={13} className="text-purple-400" />
+                              <span>{task.subtask}</span>
                             </div>
                           )}
 
                           {editingId === task.id ? (
                             <div className="bg-slate-900 border border-slate-700 p-3 rounded-lg space-y-2 text-xs">
                               <div>
-                                <label className="text-slate-400 block mb-1">Main Task Title</label>
+                                <label className="text-slate-400 block mb-1">Task Title</label>
                                 <input
                                   type="text"
                                   value={editTitle}
                                   onChange={(e) => setEditTitle(e.target.value)}
-                                  className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="text-slate-400 block mb-1">Subtask</label>
-                                <input
-                                  type="text"
-                                  value={editSubtask}
-                                  onChange={(e) => setEditSubtask(e.target.value)}
                                   className="w-full bg-slate-800 border border-slate-600 p-1.5 rounded text-white focus:outline-none"
                                 />
                               </div>
@@ -677,7 +661,7 @@ export default function EKORunbookPage() {
               )}
             </div>
 
-            {/* COLUMN 2: DONE / COMPLETED TASKS */}
+            {/* COLUMN 2: COMPLETED TASKS */}
             <div className="space-y-3">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                 <h3 className="font-bold text-slate-200 flex items-center gap-2">
@@ -712,8 +696,8 @@ export default function EKORunbookPage() {
                         
                         {task.subtask && (
                           <div className="flex items-center gap-1.5 text-xs text-purple-400/80 font-medium bg-purple-950/30 px-2 py-0.5 rounded border border-purple-900/40 w-fit">
-                            <Layers size={12} />
-                            <span>Subtask: {task.subtask}</span>
+                            <Tag size={12} />
+                            <span>{task.subtask}</span>
                           </div>
                         )}
 
