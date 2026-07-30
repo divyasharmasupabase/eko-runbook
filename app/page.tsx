@@ -16,19 +16,34 @@ interface EKOTask {
   notes: string;
 }
 
-// Safe string helper to prevent undefined crashes
+// Safe string helper
 const safeLower = (val: any): string => String(val ?? '').toLowerCase().trim();
 
-// Strict Category Matching for your 5 specific categories
-const matchCategoryHeader = (text: any): string | null => {
-  const lower = safeLower(text);
-  if (!lower) return null;
+// Strict Category Header Detection (Matches exact section dividers in Excel)
+const detectCategoryHeader = (cellStrings: string[]): string | null => {
+  const nonEmp = cellStrings.filter((s) => s !== '');
+  if (nonEmp.length === 0 || nonEmp.length > 3) return null; // Section headers don't have full task metadata rows
 
-  if (lower.includes('brainstorm')) return 'Topics Brainstorming';
-  if (lower.includes('qa topic') || lower.includes('qa content') || lower === 'qa topics') return 'QA Topics Content';
-  if (lower.includes('hackathon')) return 'Hackathon';
-  if (lower.includes('india swag') || lower.includes('swag')) return 'India Swag';
-  if (lower.includes('miscellaneous') || lower.includes('misc')) return 'Miscellaneous';
+  for (const str of nonEmp) {
+    const lower = str.toLowerCase().trim();
+    
+    let foundCat: string | null = null;
+    if (lower === 'topics brainstorming' || lower === 'topics brainstorm' || lower === 'topic brainstorming' || lower === 'brainstorming') {
+      foundCat = 'Topics Brainstorming';
+    } else if (lower === 'qa topics content' || lower === 'qa topics' || lower === 'qa topic content' || lower === 'qa content') {
+      foundCat = 'QA Topics Content';
+    } else if (lower === 'hackathon' || lower === 'hackathon topics' || lower === 'hackathon activities') {
+      foundCat = 'Hackathon';
+    } else if (lower === 'india swag' || lower === 'swag' || lower === 'swag items' || lower === 'swag activities') {
+      foundCat = 'India Swag';
+    } else if (lower === 'miscellaneous' || lower === 'misc' || lower === 'miscellaneous tasks') {
+      foundCat = 'Miscellaneous';
+    }
+
+    if (foundCat && str.length < 40) {
+      return foundCat;
+    }
+  }
 
   return null;
 };
@@ -215,7 +230,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Safe Excel Parser
+  // Sequential 2D Matrix Excel Parser with Strict Section Header Tracking
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -252,7 +267,7 @@ export default function EKORunbookPage() {
 
           const rowCombinedLower = safeLower(cellStrings.join(' '));
 
-          // 1. Column Headers Detection
+          // 1. Column Headers Detection Row
           if (
             rowCombinedLower.includes('activity') ||
             rowCombinedLower.includes('assigned') ||
@@ -271,20 +286,19 @@ export default function EKORunbookPage() {
             continue; // Skip column header row
           }
 
-          // Safe Cell Getter
+          // 2. Section Category Header Check
+          const matchedCategory = detectCategoryHeader(cellStrings);
+          if (matchedCategory) {
+            currentCategory = matchedCategory; // Switch active category for all following rows!
+            continue; // DO NOT add this row as a task card!
+          }
+
+          // 3. Process Regular Task Row
           const getCell = (colIdx: number): string => (colIdx >= 0 && colIdx < cellStrings.length ? cellStrings[colIdx] : '');
 
           const rawTitle = getCell(colMap.title) || cellStrings[0] || '';
           if (!rawTitle) continue;
 
-          // 2. Category Header Check
-          const matchedCat = matchCategoryHeader(rawTitle);
-          if (matchedCat) {
-            currentCategory = matchedCat;
-            continue; // DO NOT add category headers as task cards!
-          }
-
-          // 3. Process Task Row
           const personVal = getCell(colMap.person);
           const teamVal = getCell(colMap.team);
           const dateVal = colMap.date >= 0 && colMap.date < row.length ? row[colMap.date] : '';
@@ -296,7 +310,7 @@ export default function EKORunbookPage() {
 
           mappedRows.push({
             title: rawTitle,
-            subtask: currentCategory || 'Miscellaneous',
+            subtask: currentCategory, // Automatically inherits current active category!
             assigned_to: personVal || 'Unassigned Person',
             team: teamVal || 'Unassigned Team',
             scheduled_at,
