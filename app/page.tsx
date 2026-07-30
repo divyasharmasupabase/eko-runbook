@@ -18,6 +18,7 @@ interface EKOTask {
 
 const KNOWN_HEADERS = [
   'topics brainstorm',
+  'topics brainstorming',
   'qa topics content',
   'hackathon',
   'india swag',
@@ -121,7 +122,7 @@ export default function EKORunbookPage() {
     const { error } = await supabase.from('eko_tasks').insert([
       {
         title: newTitle,
-        subtask: 'General',
+        subtask: 'Miscellaneous',
         assigned_to: newAssigned || 'Unassigned Person',
         team: newTeam || 'Unassigned Team',
         scheduled_at: new Date(newScheduled).toISOString(),
@@ -182,7 +183,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Smart Sequential Excel Parser
+  // Sequential 2D Matrix Excel Parser
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -197,58 +198,76 @@ export default function EKORunbookPage() {
         const buffer = evt.target?.result;
         const workbook = XLSX.read(buffer, { type: 'array' });
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonRows: any[] = XLSX.utils.sheet_to_json(firstSheet);
+        
+        // Read sheet as raw 2D row array
+        const matrix: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
 
-        let currentCategory = 'General';
+        let currentCategory = '';
+        let colMap = { title: 0, person: -1, team: -1, date: -1, status: -1, notes: -1 };
         const mappedRows: any[] = [];
 
-        jsonRows.forEach((row) => {
-          const rawTitle = String(
-            row.Activity || row.Title || row.Task || row['Things To Do'] || row['Main Task'] || row.Topic || row.Category || row.__EMPTY || ''
-          ).trim();
+        for (let r = 0; r < matrix.length; r++) {
+          const row = matrix[r];
+          if (!row || row.length === 0) continue;
 
-          if (!rawTitle) return;
+          const cellStrings = row.map((c) => String(c ?? '').trim());
+          const nonEmpCells = cellStrings.filter((s) => s !== '');
 
-          const lowerTitle = rawTitle.toLowerCase();
+          if (nonEmpCells.length === 0) continue; // Skip blank rows
 
-          const hasPerson = row['Assigned Person'] || row.Person || row['Assigned To'] || row.Assigned || row.Owner;
-          const hasTeam = row.Team || row['Assigned Team'] || row.Department || row.Group;
-          const hasDate = row.Time || row.Schedule || row.Date || row['Due Date'] || row['Due Date / Time'];
-          const hasStatus = row.Status || row.Done || row.Completed || row['Is Completed'] || row.Checkbox || row.State || row['Checkbox Status'];
+          const rowCombinedLower = cellStrings.join(' ').toLowerCase();
 
-          const isExplicitKnownHeader = KNOWN_HEADERS.some((kh) => lowerTitle.includes(kh));
-          const isHeaderSectionDivider = isExplicitKnownHeader || (!hasPerson && !hasTeam && !hasDate && !hasStatus);
-
-          if (isHeaderSectionDivider) {
-            currentCategory = rawTitle;
-            return;
+          // 1. Detect Column Headers Row (e.g., Activity | Assigned Person | Team | Status)
+          if (
+            rowCombinedLower.includes('activity') ||
+            rowCombinedLower.includes('assigned') ||
+            rowCombinedLower.includes('things to do') ||
+            rowCombinedLower.includes('owner')
+          ) {
+            cellStrings.forEach((val, idx) => {
+              const l = val.toLowerCase();
+              if (l.includes('activity') || l.includes('task') || l.includes('title') || l.includes('things to do')) colMap.title = idx;
+              else if (l.includes('person') || l.includes('assigned') || l.includes('owner')) colMap.person = idx;
+              else if (l.includes('team') || l.includes('department') || l.includes('group')) colMap.team = idx;
+              else if (l.includes('date') || l.includes('time') || l.includes('schedule')) colMap.date = idx;
+              else if (l.includes('status') || l.includes('done') || l.includes('completed') || l.includes('checkbox') || l.includes('state')) colMap.status = idx;
+              else if (l.includes('note') || l.includes('comment') || l.includes('detail')) colMap.notes = idx;
+            });
+            continue; // Skip the column header row itself
           }
 
-          const explicitCategory = String(row.Category || row.Topic || row.Subtask || row['Sub Task'] || '').trim();
-          const categoryTag = explicitCategory || currentCategory;
+          // 2. Check if this row is a Section Category Header
+          const isKnownCategory = KNOWN_HEADERS.some((kh) => rowCombinedLower.includes(kh));
+          const isSingleCellHeader = nonEmpCells.length === 1 && !cellStrings[0].includes('/');
 
-          const assigned_to = String(hasPerson || 'Unassigned Person').trim();
-          const team = String(hasTeam || 'Unassigned Team').trim();
-          const notes = String(row.Notes || row.Comments || row.Details || row.Description || '').trim();
-          
-          const scheduled_at = hasDate ? new Date(hasDate).toISOString() : new Date().toISOString();
+          if (isKnownCategory || isSingleCellHeader) {
+            currentCategory = cellStrings.find((s) => s !== '') || currentCategory;
+            continue; // DO NOT add category headers as task rows!
+          }
 
-          const is_completed = 
-            hasStatus === true || 
-            hasStatus === 1 ||
-            (typeof hasStatus === 'string' && 
-              ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(hasStatus.trim().toLowerCase()));
+          // 3. Process Task Row
+          const title = colMap.title >= 0 ? cellStrings[colMap.title] : cellStrings[0];
+          if (!title || title === '') continue;
+
+          const person = colMap.person >= 0 ? cellStrings[colMap.person] : '';
+          const team = colMap.team >= 0 ? cellStrings[colMap.team] : '';
+          const dateRaw = colMap.date >= 0 ? cellStrings[colMap.date] : '';
+          const statusRaw = colMap.status >= 0 ? cellStrings[colMap.status] : '';
+          const notes = colMap.notes >= 0 ? cellStrings[colMap.notes] : '';
+
+          const scheduled_at = dateRaw && !isNaN(Date.parse(dateRaw)) ? new Date(dateRaw).toISOString() : new Date().toISOString();
+          const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(statusRaw.toLowerCase());
 
           mappedRows.push({
-            title: rawTitle,
-            subtask: categoryTag,
-            assigned_to,
-            team,
+            title,
+            subtask: currentCategory || 'Miscellaneous',
+            assigned_to: person || 'Unassigned Person',
+            team: team || 'Unassigned Team',
             scheduled_at,
             notes,
             is_completed,
           });
-        });
+        }
 
         if (mappedRows.length > 0) {
           if (shouldReplace) {
@@ -259,7 +278,7 @@ export default function EKORunbookPage() {
           if (error) {
             setUploadStatus(`Error importing: ${error.message}`);
           } else {
-            setUploadStatus(`Successfully imported ${mappedRows.length} activities!`);
+            setUploadStatus(`Successfully imported ${mappedRows.length} activities grouped under categories!`);
             fetchTasks();
           }
         } else {
@@ -278,7 +297,7 @@ export default function EKORunbookPage() {
   const groupByCategory = (taskList: EKOTask[]) => {
     const groups: { [key: string]: EKOTask[] } = {};
     taskList.forEach((task) => {
-      const cat = task.subtask || 'General';
+      const cat = task.subtask || 'Miscellaneous';
       if (!groups[cat]) groups[cat] = [];
       groups[cat].push(task);
     });
