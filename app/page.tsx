@@ -16,21 +16,24 @@ interface EKOTask {
   notes: string;
 }
 
-// STRICT MATCHING FOR YOUR 5 SPECIFIC CATEGORIES ONLY
-const matchCategoryHeader = (text: string): string | null => {
-  if (!text) return null;
-  const lower = text.toLowerCase().trim();
+// Safe string helper to prevent undefined crashes
+const safeLower = (val: any): string => String(val ?? '').toLowerCase().trim();
+
+// Strict Category Matching for your 5 specific categories
+const matchCategoryHeader = (text: any): string | null => {
+  const lower = safeLower(text);
+  if (!lower) return null;
 
   if (lower.includes('brainstorm')) return 'Topics Brainstorming';
   if (lower.includes('qa topic') || lower.includes('qa content') || lower === 'qa topics') return 'QA Topics Content';
   if (lower.includes('hackathon')) return 'Hackathon';
-  if (lower.includes('india swag') || lower === 'swag') return 'India Swag';
-  if (lower.includes('miscellaneous') || lower === 'misc') return 'Miscellaneous';
+  if (lower.includes('india swag') || lower.includes('swag')) return 'India Swag';
+  if (lower.includes('miscellaneous') || lower.includes('misc')) return 'Miscellaneous';
 
   return null;
 };
 
-// Safe Date Converter to prevent RangeError crashes
+// Safe Date Converter
 const parseExcelDate = (val: any): string => {
   if (!val) return new Date().toISOString();
   try {
@@ -212,7 +215,7 @@ export default function EKORunbookPage() {
     setEditingId(null);
   };
 
-  // Excel Parser with Strict 5-Category Matching
+  // Safe Excel Parser
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -247,9 +250,9 @@ export default function EKORunbookPage() {
 
           if (nonEmpCells.length === 0) continue; // Skip blank rows
 
-          const rowCombinedLower = cellStrings.join(' ').toLowerCase();
+          const rowCombinedLower = safeLower(cellStrings.join(' '));
 
-          // 1. Column Headers Row Detection
+          // 1. Column Headers Detection
           if (
             rowCombinedLower.includes('activity') ||
             rowCombinedLower.includes('assigned') ||
@@ -257,7 +260,7 @@ export default function EKORunbookPage() {
             rowCombinedLower.includes('owner')
           ) {
             cellStrings.forEach((val, idx) => {
-              const l = val.toLowerCase();
+              const l = safeLower(val);
               if (l.includes('activity') || l.includes('task') || l.includes('title') || l.includes('things to do')) colMap.title = idx;
               else if (l.includes('person') || l.includes('assigned') || l.includes('owner')) colMap.person = idx;
               else if (l.includes('team') || l.includes('department') || l.includes('group')) colMap.team = idx;
@@ -268,25 +271,28 @@ export default function EKORunbookPage() {
             continue; // Skip column header row
           }
 
-          const rawTitle = colMap.title >= 0 && cellStrings[colMap.title] ? cellStrings[colMap.title] : cellStrings[0];
-          if (!rawTitle || rawTitle === '') continue;
+          // Safe Cell Getter
+          const getCell = (colIdx: number): string => (colIdx >= 0 && colIdx < cellStrings.length ? cellStrings[colIdx] : '');
 
-          // 2. Strict Check: Is this row one of our 5 Allowed Section Categories?
+          const rawTitle = getCell(colMap.title) || cellStrings[0] || '';
+          if (!rawTitle) continue;
+
+          // 2. Category Header Check
           const matchedCat = matchCategoryHeader(rawTitle);
-          if (matchedCat && (nonEmpCells.length <= 2 || rawTitle.length < 35)) {
+          if (matchedCat) {
             currentCategory = matchedCat;
-            continue; // DO NOT add as a task card! Update category container and proceed.
+            continue; // DO NOT add category headers as task cards!
           }
 
-          // 3. Process regular task row under active currentCategory
-          const personVal = colMap.person >= 0 ? cellStrings[colMap.person] : '';
-          const teamVal = colMap.team >= 0 ? cellStrings[colMap.team] : '';
-          const dateVal = colMap.date >= 0 ? row[colMap.date] : '';
-          const statusVal = colMap.status >= 0 ? cellStrings[colMap.status] : '';
-          const notesVal = colMap.notes >= 0 ? cellStrings[colMap.notes] : '';
+          // 3. Process Task Row
+          const personVal = getCell(colMap.person);
+          const teamVal = getCell(colMap.team);
+          const dateVal = colMap.date >= 0 && colMap.date < row.length ? row[colMap.date] : '';
+          const statusVal = getCell(colMap.status);
+          const notesVal = getCell(colMap.notes);
 
           const scheduled_at = parseExcelDate(dateVal);
-          const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(statusVal.toLowerCase());
+          const is_completed = ['done', 'complete', 'completed', 'true', 'yes', 'x', '✓', '1'].includes(safeLower(statusVal));
 
           mappedRows.push({
             title: rawTitle,
@@ -308,7 +314,7 @@ export default function EKORunbookPage() {
           if (error) {
             setUploadStatus(`Error importing: ${error.message}`);
           } else {
-            setUploadStatus(`Successfully imported ${mappedRows.length} activities strictly across your 5 categories!`);
+            setUploadStatus(`Successfully imported ${mappedRows.length} activities grouped under categories!`);
             fetchTasks();
           }
         } else {
@@ -324,7 +330,7 @@ export default function EKORunbookPage() {
     e.target.value = '';
   };
 
-  // Group tasks strictly by Category
+  // Helper function to group tasks by Category/Subtask
   const groupByCategory = (taskList: EKOTask[]) => {
     const groups: { [key: string]: EKOTask[] } = {};
     taskList.forEach((task) => {
@@ -341,7 +347,7 @@ export default function EKORunbookPage() {
 
   const filteredTasks = activeTab === 'ALL' 
     ? tasks 
-    : tasks.filter((t) => t.assigned_to.toLowerCase() === activeTab.toLowerCase());
+    : tasks.filter((t) => safeLower(t.assigned_to) === safeLower(activeTab));
 
   const getDateKey = (dateStr: string) => {
     if (!dateStr) return '';
@@ -433,8 +439,8 @@ export default function EKORunbookPage() {
           </button>
 
           {uniquePersons.map((person) => {
-            const personTaskCount = tasks.filter((t) => t.assigned_to.toLowerCase() === person.toLowerCase()).length;
-            const isSelected = activeTab.toLowerCase() === person.toLowerCase();
+            const personTaskCount = tasks.filter((t) => safeLower(t.assigned_to) === safeLower(person)).length;
+            const isSelected = safeLower(activeTab) === safeLower(person);
 
             return (
               <button
