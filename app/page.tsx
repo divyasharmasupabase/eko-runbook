@@ -16,6 +16,14 @@ interface EKOTask {
   notes: string;
 }
 
+const CATEGORIES = [
+  'Topics Brainstorming',
+  'QA Topics Content',
+  'Hackathon',
+  'India Swag',
+  'Miscellaneous',
+];
+
 // Safe string helper
 const safeLower = (val: any): string => String(val ?? '').toLowerCase().trim();
 
@@ -55,12 +63,10 @@ const parseExcelDate = (val: any): string | null => {
   if (strVal === '' || strVal.toLowerCase() === 'undefined' || strVal.toLowerCase() === 'null') return null;
 
   try {
-    // 1. JS Date object
     if (val instanceof Date) {
       if (!isNaN(val.getTime())) return val.toISOString();
     }
 
-    // 2. Excel Serial Number
     if (typeof val === 'number') {
       if (val > 20000 && val < 70000) {
         const parsed = XLSX.SSF.parse_date_code(val);
@@ -71,9 +77,7 @@ const parseExcelDate = (val: any): string | null => {
       }
     }
 
-    // 3. String date parsing
     if (typeof val === 'string' || typeof val === 'number') {
-      // Prevent pure integers like status codes (1, 0, 2) from parsing as dates
       if (/^\d{1,4}$/.test(strVal) && Number(strVal) < 1900) {
         return null;
       }
@@ -97,12 +101,15 @@ export default function EKORunbookPage() {
   
   const [activeTab, setActiveTab] = useState<string>('ALL');
 
+  // New Task Form State
   const [newTitle, setNewTitle] = useState('');
+  const [newCategory, setNewCategory] = useState('Topics Brainstorming');
   const [newAssigned, setNewAssigned] = useState('');
   const [newTeam, setNewTeam] = useState('');
   const [newScheduled, setNewScheduled] = useState('');
   const [newNotes, setNewNotes] = useState('');
   
+  // Task Editing State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editAssigned, setEditAssigned] = useState('');
@@ -174,6 +181,7 @@ export default function EKORunbookPage() {
       .eq('id', id);
   };
 
+  // Add Manual Task with Selected Category
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle) return;
@@ -181,7 +189,7 @@ export default function EKORunbookPage() {
     const { error } = await supabase.from('eko_tasks').insert([
       {
         title: newTitle,
-        subtask: 'Miscellaneous',
+        subtask: newCategory || 'Topics Brainstorming',
         assigned_to: newAssigned || 'Unassigned Person',
         team: newTeam || 'Unassigned Team',
         scheduled_at: newScheduled ? new Date(newScheduled).toISOString() : null,
@@ -192,6 +200,7 @@ export default function EKORunbookPage() {
 
     if (!error) {
       setNewTitle('');
+      setNewCategory('Topics Brainstorming');
       setNewAssigned('');
       setNewTeam('');
       setNewScheduled('');
@@ -313,14 +322,12 @@ export default function EKORunbookPage() {
           const personVal = getCell(colMap.person);
           const teamVal = getCell(colMap.team);
           
-          // Get raw date cell value from mapped column
           let dateVal = colMap.date >= 0 && colMap.date < row.length ? row[colMap.date] : null;
           let scheduled_at = parseExcelDate(dateVal);
 
-          // Fallback: If no date found in designated column, scan all cells in this row for a valid date!
           if (!scheduled_at) {
             for (let c = 0; c < row.length; c++) {
-              if (c === colMap.title) continue; // Skip title cell
+              if (c === colMap.title) continue;
               const cand = parseExcelDate(row[c]);
               if (cand) {
                 scheduled_at = cand;
@@ -565,7 +572,7 @@ export default function EKORunbookPage() {
           )}
         </div>
 
-        {/* Add Activity Form */}
+        {/* Add Activity Form (Includes Category Dropdown) */}
         <form onSubmit={handleAddTask} className="bg-slate-800 border border-slate-700 p-4 rounded-xl grid grid-cols-1 md:grid-cols-3 gap-3 shadow-lg">
           <input
             type="text"
@@ -581,6 +588,20 @@ export default function EKORunbookPage() {
             onChange={(e) => setNewScheduled(e.target.value)}
             className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
+          
+          {/* Category Selector */}
+          <select
+            value={newCategory}
+            onChange={(e) => setNewCategory(e.target.value)}
+            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-purple-300 font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            {CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>
+                Category: {cat}
+              </option>
+            ))}
+          </select>
+
           <input
             type="text"
             placeholder="Team (e.g. AV / Tech)"
@@ -600,7 +621,7 @@ export default function EKORunbookPage() {
             placeholder="Notes / Additional details..."
             value={newNotes}
             onChange={(e) => setNewNotes(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm md:col-span-3 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
           <button
             type="submit"
@@ -757,7 +778,6 @@ export default function EKORunbookPage() {
                                     )}
 
                                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 pt-1">
-                                      {/* Due Date Chip */}
                                       {task.scheduled_at && (
                                         <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${isUpcomingDateTask ? 'bg-orange-950/80 border-orange-500/50 text-orange-300 font-semibold' : 'bg-slate-900 border-slate-800 text-amber-300'}`}>
                                           <Clock size={12} />
